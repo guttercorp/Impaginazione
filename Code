@@ -1,0 +1,146 @@
+import os
+import json
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
+def get_user_inputs():
+    cliente = input("Chi è il cliente? ").strip()
+    locandina = input("Qual è la locandina dell’evento? ").strip()
+    google_docs_id = input("Inserisci l'ID del documento Google Docs: ").strip()
+    return cliente, locandina, google_docs_id
+
+def load_template(template_path):
+    with open(template_path, 'r') as file:
+        return file.read()
+
+def replace_static_content(template, cliente, locandina):
+    template = template.replace("http://www.loudpromotion.it/ufficiostampa/artisti/cliente/logo_cliente", 
+                                 f"http://www.loudpromotion.it/ufficiostampa/artisti/{cliente.lower()}/{cliente.lower()}_logo.png")
+    template = template.replace("http://www.loudpromotion.it/ufficiostampa/artisti/cliente/locandina", 
+                                 f"http://www.loudpromotion.it/ufficiostampa/artisti/{cliente.lower()}/{locandina}")
+    return template
+
+def get_google_docs_content(document_id, creds):
+    service = build('docs', 'v1', credentials=creds)
+    document = service.documents().get(documentId=document_id).execute()
+    return document.get('body', {}).get('content', [])
+
+def extract_information(content):
+    title = ""
+    artist = ""
+    date = ""
+    links = []
+    description = []
+    capture_description = False
+    published_date = ""
+
+    for element in content:
+        if 'paragraph' in element:
+            paragraph = element['paragraph']
+            text = ''.join([el.get('textRun', {}).get('content', '').strip() for el in paragraph.get('elements', [])])
+
+            # Filtra il testo non desiderato
+            if "MAGNOLIA ESTATE" in text or "Magnolia Estate 2024" in text:
+                continue
+
+            # Rileva l'artista e la data
+            if "MDOU MOCTAR" in text.upper():
+                artist = "MDOU MOCTAR"
+                title = artist + " " + date
+
+            if "2024" in text and not date:
+                date = text
+                title = artist + " " + date
+
+            # Inizia a catturare la descrizione dell'evento
+            if "Giovedì 22 agosto" in text or "evento straordinario" in text:
+                capture_description = True
+            
+            if capture_description:
+                description.append(text)
+
+            # Fine cattura descrizione quando il testo arriva a una delle informazioni successive non necessarie
+            if "MAGNOLIA ESTATE" in text or "Tutte le info su" in text:
+                capture_description = False
+
+            # Rileva link
+            if "TicketOne" in text:
+                link = "https://www.ticketone.it/event/mdou-moctar-circolo-magnolia-18353921/"
+                links.append(("TicketOne", link))
+
+            if "Ticketmaster" in text:
+                link = "https://shop.ticketmaster.it/biglietti/acquista-biglietti-mdou-moctar-funeral-for-justice-euuk-tour-22-agosto-2024-circolo-magnolia-segrate-8488.html"
+                links.append(("Ticketmaster", link))
+
+            # Rileva la data di pubblicazione
+            if "Lunedì 19 agosto 2024" in text:
+                published_date = "Lunedì 19 agosto 2024"
+
+    # Unisci le linee della descrizione in un singolo paragrafo HTML
+    description_html = '<br>'.join(description)
+
+    return title, artist, date, links, description_html, published_date
+
+def replace_placeholders(template, title, artist, date, links, description, published_date):
+    template = template.replace("<!-- TITLE_PLACEHOLDER -->", title)
+    template = template.replace("<!-- DATE_PLACEHOLDER -->", date)
+    template = template.replace("<!-- ARTIST_NAME_PLACEHOLDER -->", artist)
+
+    for i, (text, link) in enumerate(links):
+        template = template.replace(f"<!-- LINK{i+1}_PLACEHOLDER -->", link)
+        template = template.replace(f"<!-- TEXT{i+1}_LINK_PLACEHOLDER -->", text)
+
+    template = template.replace("<!-- EVENT_DESCRIPTION_PLACEHOLDER -->", description)
+    template = template.replace("<!-- DATE_PUBLISHED_PLACEHOLDER -->", published_date)
+
+    return template
+
+def save_html_file(final_content, cliente, locandina, output_directory):
+    filename = f"{locandina}_{cliente}.html"
+    output_path = os.path.join(output_directory, filename)
+    with open(output_path, 'w') as file:
+        file.write(final_content)
+    return output_path
+
+def upload_to_ftp(file_path, ftp_details, cliente):
+    print(f"Uploading {file_path} to FTP server...")
+    # Codice di upload FTP qui
+
+def main():
+    cliente, locandina, google_docs_id = get_user_inputs()
+
+    template_path = '/Users/amerigobenedettelli/Python/Projects/ImpaginazioneGoogleDoc/template.html'
+    template = load_template(template_path)
+
+    template = replace_static_content(template, cliente, locandina)
+
+    with open('/Users/amerigobenedettelli/Python/Projects/ImpaginazioneGoogleDoc/Credentials/client_secret_236215977565-99l46k7lu68fgnvlrff8kup6arblqcdq.apps.googleusercontent.com.json', 'r') as token_file:
+        data = json.load(token_file)
+        creds = Credentials(
+            token=data['access_token'],
+            refresh_token=data['refresh_token'],
+            token_uri=data['installed']['token_uri'],
+            client_id=data['installed']['client_id'],
+            client_secret=data['installed']['client_secret']
+        )
+
+    content = get_google_docs_content(google_docs_id, creds)
+
+    title, artist, date, links, description, published_date = extract_information(content)
+
+    final_content = replace_placeholders(template, title, artist, date, links, description, published_date)
+
+    output_directory = '/Users/amerigobenedettelli/Python/Projects/ImpaginazioneGoogleDoc/output'
+    final_html_path = save_html_file(final_content, cliente, locandina, output_directory)
+
+    ftp_details = {
+        'host': 'ftp.loudpromotion.it',
+        'user': '2149900@aruba.it',
+        'password': 'Filippo_81'
+    }
+    upload_to_ftp(final_html_path, ftp_details, cliente)
+
+    print(f"Il file HTML è stato generato e caricato con successo: {final_html_path}")
+
+if __name__ == '__main__':
+    main()
